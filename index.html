@@ -116,8 +116,19 @@
     text-align: center;
   }
 
-  .btn-new-wedding {
+  .list-actions {
     margin-top: 18px;
+    display: flex;
+    gap: 10px;
+  }
+
+  .list-actions .btn-secondary {
+    flex: 0 0 auto;
+    padding: 16px 20px;
+  }
+
+  .btn-new-wedding {
+    flex: 1 1 auto;
     width: 100%;
     padding: 16px 0;
     border-radius: 10px;
@@ -130,6 +141,35 @@
   }
 
   .btn-new-wedding:hover { background: #3a3733; }
+
+  /* ---------- 예식 목록: 파일 불러오기 확인 박스 ---------- */
+  .import-confirm {
+    display: none;
+    margin-top: 14px;
+    padding: 16px 18px;
+    border-radius: 10px;
+    background: #fdf3e3;
+    border: 1px solid #ecd9ad;
+  }
+  .import-confirm.active { display: block; }
+  .import-confirm.error {
+    background: #fdecec;
+    border-color: #c23030;
+  }
+  .import-confirm-body {
+    font-size: 13.5px;
+    color: #7a5f24;
+    line-height: 1.6;
+    white-space: pre-line;
+  }
+  .import-confirm.error .import-confirm-body { color: #c23030; }
+  .import-confirm-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  /* 에러 상태에선 확인(불러오기/덮어쓰기) 버튼만 숨긴다 — 취소 버튼은 남겨야 박스를 닫을 방법이 있다 */
+  .import-confirm.error #importConfirmBtn { display: none; }
 
   /* ---------- 새 예식 만들기 화면 ---------- */
   #screenNew {
@@ -742,7 +782,18 @@
     <div class="list-wrap">
       <div class="list-title">축의금 접수 — 예식 목록</div>
       <div id="weddingListEl"></div>
-      <button type="button" class="btn-new-wedding" id="btnGoNew">+ 새 예식 만들기</button>
+      <div class="import-confirm" id="importConfirmBox">
+        <div class="import-confirm-body" id="importConfirmBody"></div>
+        <div class="import-confirm-actions">
+          <button type="button" class="btn-secondary" id="importCancelBtn">취소</button>
+          <button type="button" class="btn-primary" id="importConfirmBtn">불러오기</button>
+        </div>
+      </div>
+      <div class="list-actions">
+        <button type="button" class="btn-secondary" id="btnImportFile">파일에서 불러오기</button>
+        <button type="button" class="btn-new-wedding" id="btnGoNew">+ 새 예식 만들기</button>
+      </div>
+      <input type="file" id="importFileInput" accept="application/json,.json" class="hidden">
     </div>
   </div>
 
@@ -1209,6 +1260,305 @@
     setNewSide('groom');
     showScreen('new');
     document.getElementById('groomNameInput').focus();
+  });
+
+  // ============================================================
+  // 파일에서 불러오기 (JSON import)
+  // ============================================================
+  // writeToFile()이 만드는 파일 형식: { version: 1, weddings: [wedding] } — 예식 하나만.
+  // 여기서 그 형식을 정확히 되받아 검증한다. 외부에서 온 파일이므로 필드 하나하나를
+  // 화이트리스트로 검증해서 재구성한다 — 통째로 merge하면 알 수 없는 키가 저장 객체에
+  // 섞여 들어갈 수 있다 ([[feedback-no-session-state-in-storage]]와 같은 종류의 사고).
+  const btnImportFile = document.getElementById('btnImportFile');
+  const importFileInput = document.getElementById('importFileInput');
+  const importConfirmBox = document.getElementById('importConfirmBox');
+  const importConfirmBody = document.getElementById('importConfirmBody');
+  const importConfirmBtn = document.getElementById('importConfirmBtn');
+  const importCancelBtn = document.getElementById('importCancelBtn');
+  const OPEN_PICKER_SUPPORTED = typeof window.showOpenFilePicker === 'function';
+
+  // 확인 대기 중인 파싱 결과. 박스가 닫히면(취소/재시도) 반드시 비워서, 오래된 파싱
+  // 결과가 나중 클릭으로 잘못 커밋되는 일이 없게 한다.
+  let pendingImport = null; // { wedding, existing } | null
+
+  function isPlainObject(v) {
+    return typeof v === 'object' && v !== null && !Array.isArray(v);
+  }
+
+  // id는 target.getAttribute('data-id')로 그대로 꺼내 data-id 어트리뷰트에 이스케이프 없이
+  // 심는다(renderWeddingList). escapeHtml은 textContent 기반이라 속성 컨텍스트의 "를 막지
+  // 못하므로, 외부 파일의 id는 여기서 문자셋을 좁게 제한해 그 주입 경로를 원천 차단한다.
+  const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+  // Number.isInteger만으로는 상한이 없다 — 1e21도 정수로 통과하고, 화면(formatComma)이
+  // 지수표기를 그대로 찍거나, 합계가 MAX_SAFE_INTEGER 근처에서 조용히 틀려진다. 수동 입력은
+  // 1,000만원 확인 게이트(updateAmountConfirmGate)가 있지만 파일 경로에는 없었으므로 여기 상한을
+  // 둔다. 파일은 확인 없이 그냥 거부하는 경로라 게이트보다 넉넉하게 잡았다(억 단위까지 허용).
+  // ENVELOPE_CAP × AMOUNT_CAP(최악의 경우 모든 entry가 상한값)도 MAX_SAFE_INTEGER보다 훨씬
+  // 작아서 합계 계산이 항상 안전 범위 안에 있다.
+  const AMOUNT_CAP = 100000000; // 1억원
+  const PEOPLE_CAP = 1000;
+  const ENVELOPE_CAP = 100000;
+
+  // src 하나(예식 객체 하나)를 검증해서 저장용 wedding 객체로 재구성한다. 실패 시 이유 문자열만 반환 —
+  // 위치 접두사("N번째 예식: ")를 붙일지는 호출부(parseImportPayload)가 파일 안 예식 개수를 보고 정한다.
+  function validateWedding(src) {
+    if (!isPlainObject(src)) {
+      return { ok: false, error: '예식 데이터 형식이 올바르지 않습니다.' };
+    }
+    if (typeof src.id !== 'string' || !ID_RE.test(src.id)) {
+      return { ok: false, error: '예식 식별자(id)가 없거나 올바르지 않습니다.' };
+    }
+    const groomName = typeof src.groomName === 'string' ? src.groomName.trim() : '';
+    const brideName = typeof src.brideName === 'string' ? src.brideName.trim() : '';
+    if (!groomName || !brideName) {
+      return { ok: false, error: '신랑 이름 또는 신부 이름이 없습니다.' };
+    }
+    if (src.side !== 'groom' && src.side !== 'bride') {
+      return { ok: false, error: '접수 측(side) 값이 올바르지 않습니다.' };
+    }
+    if (!Array.isArray(src.entries)) {
+      return { ok: false, error: '접수 내역(entries)이 배열이 아닙니다.' };
+    }
+
+    const seenEnvelopes = {};
+    const entries = [];
+    for (let i = 0; i < src.entries.length; i++) {
+      const e = src.entries[i];
+      if (!isPlainObject(e)) return { ok: false, error: (i + 1) + '번째 접수 내역 형식이 올바르지 않습니다.' };
+      const envelope = e.envelope;
+      const name = typeof e.name === 'string' ? e.name.trim() : '';
+      const amount = e.amount;
+      const people = e.people;
+      if (!Number.isInteger(envelope) || envelope <= 0 || envelope > ENVELOPE_CAP) {
+        return { ok: false, error: (i + 1) + '번째 접수 내역의 봉투번호가 올바르지 않습니다.' };
+      }
+      if (seenEnvelopes[envelope]) {
+        return { ok: false, error: '봉투번호 ' + pad3(envelope) + '번이 파일 안에서 중복됩니다.' };
+      }
+      seenEnvelopes[envelope] = true;
+      if (!name) return { ok: false, error: (i + 1) + '번째 접수 내역에 이름이 없습니다.' };
+      // amount/people은 저장 형식상 항상 원 단위 정수 — 문자열로 오면(예: "50000") 이후
+      // 합계 계산(total += e.amount)이 덧셈이 아니라 문자열 연결이 되므로 엄격히 정수만 허용한다.
+      // 상한도 함께 확인한다 — Number.isInteger는 1e21도 통과시키므로 이것만으로는 부족하다.
+      if (!Number.isInteger(amount) || amount <= 0 || amount > AMOUNT_CAP) {
+        return { ok: false, error: (i + 1) + '번째 접수 내역의 금액이 올바르지 않습니다.' };
+      }
+      if (!Number.isInteger(people) || people < 1 || people > PEOPLE_CAP) {
+        return { ok: false, error: (i + 1) + '번째 접수 내역의 인원이 올바르지 않습니다.' };
+      }
+      entries.push({
+        envelope: envelope,
+        name: name,
+        amount: amount,
+        people: people,
+        at: typeof e.at === 'string' ? e.at : '' // 형식이 이상해도 formatTime()이 빈 문자열로 처리
+      });
+    }
+
+    const maxEnvelope = entries.reduce(function (m, e) { return Math.max(m, e.envelope); }, 0);
+    // nextEnvelope도 entries의 envelope와 같은 상한을 적용한다 — 거대한 값이 그대로 들어오면
+    // 이 예식의 다음 발번이 영구히 오염된다.
+    const fileNextEnvelope = (Number.isInteger(src.nextEnvelope) && src.nextEnvelope > 0 && src.nextEnvelope <= ENVELOPE_CAP)
+      ? src.nextEnvelope
+      : 0;
+    const nextEnvelope = Math.max(1, maxEnvelope + 1, fileNextEnvelope);
+
+    // countedCash는 정산 화면에서 기록 합계와 비교되는 실제 현금 총액이다. 느슨하게 받으면
+    // (음수·소수·NaN 등) 예를 들어 음수가 그대로 들어갔을 때 parseAmount의 부호 제거로 차액이
+    // 0으로 계산되어 "기록과 현금이 일치합니다"가 잘못 표시될 수 있다 — 정수·0 이상·상한
+    // 이내만 통과시키고 그 외는 안전한 null(미입력 상태)로 되돌린다.
+    if (src.countedCash !== null && src.countedCash !== undefined &&
+        !(Number.isInteger(src.countedCash) && src.countedCash >= 0 && src.countedCash <= AMOUNT_CAP * ENVELOPE_CAP)) {
+      return { ok: false, error: '현금 대조 금액(countedCash)이 올바르지 않습니다.' };
+    }
+    const countedCash = (src.countedCash === null || src.countedCash === undefined)
+      ? null
+      : src.countedCash;
+
+    const wedding = {
+      id: src.id,
+      groomName: groomName,
+      brideName: brideName,
+      date: typeof src.date === 'string' ? src.date : '',
+      venue: typeof src.venue === 'string' ? src.venue.trim() : '',
+      side: src.side,
+      createdAt: typeof src.createdAt === 'string' ? src.createdAt : nowIso(),
+      nextEnvelope: nextEnvelope,
+      countedCash: countedCash,
+      entries: entries
+    };
+    return { ok: true, wedding: wedding };
+  }
+
+  // 순수 함수 — DOM에 접근하지 않는다(escapeHtml 등 금지). node로 바로 단위테스트 가능하게 유지.
+  // 파일에는 예식이 여러 개 들어 있을 수 있다(writeToFile은 항상 1개만 쓰지만, weddings는 배열
+  // 구조를 그대로 유지해 여러 예식을 한 파일에 담는 미래 확장을 열어둔다) — 이 함수는 배열을 순회해
+  // 전부 검증하고, 하나라도 실패하면 전체를 거부한다(부분 반영 없음).
+  function parseImportPayload(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      return { ok: false, error: '파일을 읽을 수 없습니다. JSON 형식이 아닙니다.' };
+    }
+    if (!isPlainObject(parsed) || typeof parsed.version !== 'number' || !Array.isArray(parsed.weddings)) {
+      return { ok: false, error: '이 파일은 축의금 접수 파일 형식이 아닙니다.' };
+    }
+    if (parsed.version > 1) {
+      // 더 최신 버전의 앱에서 만든 파일 — 이 버전이 모르는 필드가 있을 수 있으므로 부분적으로라도
+      // 읽으면 안 된다. 조용히 무시하거나 깨진 채로 읽지 말고 명확히 알린다.
+      return { ok: false, error: '이 파일은 더 최신 버전의 앱에서 만들어졌습니다(version ' + parsed.version + '). 앱을 업데이트한 뒤 불러오세요.' };
+    }
+    if (parsed.version < 1 || parsed.weddings.length === 0) {
+      return { ok: false, error: '이 파일은 축의금 접수 파일 형식이 아닙니다.' };
+    }
+
+    const multi = parsed.weddings.length > 1;
+    const weddings = [];
+    const seenIds = {};
+    for (let i = 0; i < parsed.weddings.length; i++) {
+      const result = validateWedding(parsed.weddings[i]);
+      if (!result.ok) {
+        return { ok: false, error: (multi ? (i + 1) + '번째 예식: ' : '') + result.error };
+      }
+      if (seenIds[result.wedding.id]) {
+        return { ok: false, error: '예식 식별자(id) "' + result.wedding.id + '"가 파일 안에서 중복됩니다.' };
+      }
+      seenIds[result.wedding.id] = true;
+      weddings.push(result.wedding);
+    }
+    return { ok: true, weddings: weddings };
+  }
+
+  function importSummaryHtml(w) {
+    let total = 0;
+    w.entries.forEach(function (e) { total += e.amount; });
+    return escapeHtml(w.groomName) + ' · ' + escapeHtml(w.brideName) + ' 결혼식 (' + escapeHtml(w.date || '날짜 없음') + ')\n' +
+      sideLabel(w.side) + ' 접수 · ' + w.entries.length + '건 · ' + formatComma(total) + '원';
+  }
+
+  function showImportError(message) {
+    pendingImport = null;
+    importConfirmBox.classList.add('active', 'error');
+    importConfirmBody.textContent = message;
+  }
+
+  // 파일에 예식이 여러 개면 예식별로 한 줄씩 보여준다 — 겹치는 예식은 "현재 N건/파일 M건"
+  // 비교를, 새 예식은 이름·날짜·건수·총액을 보여준다. 확인은 파일 전체에 대해 한 번만 받는다
+  // (전부 반영 또는 전부 취소) — 예식별 체크박스 같은 부분 선택은 이번 범위에 넣지 않았다.
+  function showImportPreview(weddings) {
+    const existingIds = weddings.map(function (w) { return getWedding(w.id); });
+    pendingImport = { weddings: weddings, existingIds: existingIds };
+    importConfirmBox.classList.add('active');
+    importConfirmBox.classList.remove('error');
+
+    const hasCollision = existingIds.some(function (ex) { return !!ex; });
+    const lines = weddings.map(function (w, i) {
+      const existing = existingIds[i];
+      if (existing) {
+        let existingTotal = 0;
+        existing.entries.forEach(function (e) { existingTotal += e.amount; });
+        let fileTotal = 0;
+        w.entries.forEach(function (e) { fileTotal += e.amount; });
+        return '[덮어쓰기] ' + escapeHtml(w.groomName) + ' · ' + escapeHtml(w.brideName) + ' 결혼식\n' +
+          '  현재: ' + existing.entries.length + '건 / ' + formatComma(existingTotal) + '원' +
+          ' → 파일: ' + w.entries.length + '건 / ' + formatComma(fileTotal) + '원';
+      }
+      return '[새 예식] ' + importSummaryHtml(w);
+    });
+
+    const header = weddings.length > 1
+      ? '예식 ' + weddings.length + '개를 불러옵니다. 계속할까요?\n\n'
+      : (hasCollision ? '이미 같은 예식이 있습니다. 덮어쓸까요?\n\n' : '다음 예식을 새로 추가합니다.\n\n');
+    importConfirmBody.innerHTML = header + lines.join('\n\n');
+    importConfirmBtn.textContent = hasCollision ? '덮어쓰기' : '불러오기';
+  }
+
+  function hideImportBox() {
+    pendingImport = null;
+    importConfirmBox.classList.remove('active', 'error');
+  }
+
+  function handleImportFile(text) {
+    const result = parseImportPayload(text);
+    if (!result.ok) {
+      showImportError(result.error);
+      return;
+    }
+    showImportPreview(result.weddings);
+  }
+
+  importConfirmBtn.addEventListener('click', function () {
+    if (!pendingImport) return;
+    const weddings = pendingImport.weddings;
+    const importIds = {};
+    weddings.forEach(function (w) { importIds[w.id] = w; });
+
+    // 롤백을 배열 참조 교체 한 번으로 처리한다 (기존 항목을 필드별로 고쳐쓰지 않음) —
+    // persist() 실패 시 이 참조만 되돌리면 그대로 원상복구된다. 예식이 여러 개여도 하나의
+    // 배열 교체 + 한 번의 persist()로 전부 커밋한다 — 예식별로 persist()를 반복 호출하면
+    // 중간에 stale 실패가 나도 그 앞까지는 이미 저장된 상태로 남아 부분 반영이 생긴다.
+    const prevWeddings = store.weddings;
+    const merged = store.weddings.map(function (w) { return importIds[w.id] || w; });
+    weddings.forEach(function (w) {
+      if (!getWedding(w.id)) merged.push(w); // store.weddings는 아직 안 바뀌었으므로 이 시점 조회가 유효
+    });
+    store.weddings = merged;
+
+    if (persist()) {
+      hideImportBox();
+      renderWeddingList();
+    } else {
+      store.weddings = prevWeddings;
+      // 목록 화면에는 접수 화면의 saveFailBox/saveStatusEl이 없으므로, 실패 사유를 이
+      // 박스에 직접 표시해야 한다 — 그렇지 않으면 사용자는 조용히 실패한 걸 성공으로 오해한다.
+      importConfirmBox.classList.add('active', 'error');
+      importConfirmBody.textContent = (saveFailReason === 'stale')
+        ? '저장되지 않았습니다 — 다른 탭에서 먼저 저장했습니다. 새로고침 후 다시 시도하세요.'
+        : '저장에 실패했습니다. 다시 시도해보세요.';
+      pendingImport = null;
+    }
+  });
+
+  importCancelBtn.addEventListener('click', hideImportBox);
+
+  async function pickAndReadFile() {
+    if (OPEN_PICKER_SUPPORTED) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+        });
+        const file = await handle.getFile();
+        return await file.text();
+      } catch (e) {
+        // 사용자가 취소한 경우(AbortError)는 조용히 무시한다 — 취소는 실패가 아니다.
+        // 그 외(권한 거부, 실제 읽기 실패 등)는 input[type=file] 폴백 경로와 동일하게 알려야
+        // 한다 — 지금까지는 두 경로가 브라우저에 따라 다르게 동작했다(폴백만 에러를 띄움).
+        if (e && e.name !== 'AbortError') showImportError('파일을 읽을 수 없습니다.');
+        return null;
+      }
+    }
+    // Safari/Firefox 폴백: 숨겨진 input[type=file] 클릭
+    importFileInput.click();
+    return undefined; // change 이벤트가 비동기로 처리를 이어받음
+  }
+
+  btnImportFile.addEventListener('click', async function () {
+    const text = await pickAndReadFile();
+    if (text) handleImportFile(text);
+  });
+
+  importFileInput.addEventListener('change', async function () {
+    const file = importFileInput.files && importFileInput.files[0];
+    importFileInput.value = ''; // 같은 파일을 다시 골라도 change가 발생하도록 초기화
+    if (!file) return;
+    try {
+      const text = await file.text();
+      handleImportFile(text);
+    } catch (e) {
+      showImportError('파일을 읽을 수 없습니다.');
+    }
   });
 
   // ============================================================
