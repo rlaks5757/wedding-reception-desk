@@ -478,7 +478,7 @@
   }
   .people-btn:hover { background: #eeece8; }
 
-  #peopleInput {
+  #peopleInput, #giftsInput {
     text-align: center;
     font-variant-numeric: tabular-nums;
     font-weight: 700;
@@ -574,8 +574,8 @@
   .list-header {
     flex: 0 0 auto;
     display: grid;
-    grid-template-columns: 64px 1fr 130px 60px 90px 90px;
-    gap: 8px;
+    grid-template-columns: 52px minmax(90px, 1fr) 104px 40px 52px 56px 96px;
+    gap: 6px;
     padding: 10px 20px;
     font-size: 12px;
     font-weight: 700;
@@ -592,8 +592,8 @@
 
   .entry-row {
     display: grid;
-    grid-template-columns: 64px 1fr 130px 60px 90px 90px;
-    gap: 8px;
+    grid-template-columns: 52px minmax(90px, 1fr) 104px 40px 52px 56px 96px;
+    gap: 6px;
     align-items: center;
     padding: 12px 0;
     border-bottom: 1px solid var(--line);
@@ -609,7 +609,7 @@
   .entry-envelope { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); }
   .entry-name { font-weight: 600; }
   .entry-amount { font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; }
-  .entry-people { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .entry-people, .entry-gifts { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
   .entry-time { text-align: right; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 
   .entry-actions { display: flex; gap: 6px; justify-content: flex-end; }
@@ -621,6 +621,7 @@
     color: var(--muted);
     font-size: 12px;
     font-weight: 600;
+    white-space: nowrap;
     cursor: pointer;
   }
   .icon-btn:hover { background: #f4f3f0; }
@@ -898,11 +899,20 @@
           </div>
 
           <div class="field-group">
-            <span class="field-label">동반 인원</span>
+            <span class="field-label">식권</span>
             <div class="people-control">
               <button type="button" class="people-btn" tabindex="-1" id="peopleMinus">&minus;</button>
               <input type="text" id="peopleInput" inputmode="numeric" value="1">
               <button type="button" class="people-btn" tabindex="-1" id="peoplePlus">+</button>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <span class="field-label">답례품</span>
+            <div class="people-control">
+              <button type="button" class="people-btn" tabindex="-1" id="giftsMinus">&minus;</button>
+              <input type="text" id="giftsInput" inputmode="numeric" value="0">
+              <button type="button" class="people-btn" tabindex="-1" id="giftsPlus">+</button>
             </div>
           </div>
 
@@ -923,7 +933,8 @@
             <span>봉투</span>
             <span>이름</span>
             <span style="text-align:right;">금액</span>
-            <span style="text-align:center;">인원</span>
+            <span style="text-align:center;">식권</span>
+            <span style="text-align:center;">답례품</span>
             <span style="text-align:right;">시각</span>
             <span></span>
           </div>
@@ -931,7 +942,8 @@
           <div class="list-footer">
             <div class="foot-item"><div class="foot-label">총 건수</div><div class="foot-value num" id="footCount">0건</div></div>
             <div class="foot-item"><div class="foot-label">총액</div><div class="foot-value num" id="footAmount">0원</div></div>
-            <div class="foot-item"><div class="foot-label">총 인원</div><div class="foot-value num" id="footPeople">0명</div></div>
+            <div class="foot-item"><div class="foot-label">총 식권</div><div class="foot-value num" id="footPeople">0장</div></div>
+            <div class="foot-item"><div class="foot-label">총 답례품</div><div class="foot-value num" id="footGifts">0개</div></div>
           </div>
         </div>
       </div>
@@ -956,7 +968,8 @@
           <div class="spacer"></div>
           <div class="mini-stats">
             <div><div class="mini-label">총 접수</div><div class="mini-value num" id="settleCountEl"></div></div>
-            <div><div class="mini-label">총 인원</div><div class="mini-value num" id="settlePeopleEl"></div></div>
+            <div><div class="mini-label">총 식권</div><div class="mini-value num" id="settlePeopleEl"></div></div>
+            <div><div class="mini-label">총 답례품</div><div class="mini-value num" id="settleGiftsEl"></div></div>
             <div><div class="mini-label">평균</div><div class="mini-value num" id="settleAvgEl"></div></div>
           </div>
         </div>
@@ -1062,6 +1075,12 @@
       const parsed = JSON.parse(raw);
       if (!parsed || !Array.isArray(parsed.weddings)) throw new Error('shape');
       if (typeof parsed.rev !== 'number') parsed.rev = 0;
+      // 답례품(gifts) 도입 이전에 저장된 접수 내역에는 gifts가 없다 — 0으로 채워 합계가 NaN이 되지 않게 한다.
+      parsed.weddings.forEach(function (w) {
+        if (w && Array.isArray(w.entries)) {
+          w.entries.forEach(function (e) { if (e && e.gifts === undefined) e.gifts = 0; });
+        }
+      });
       return parsed;
     } catch (e) {
       // 손상된 데이터를 버리지 않고 sidecar 키에 보존한 뒤 새로 시작한다.
@@ -1330,6 +1349,7 @@
       const name = typeof e.name === 'string' ? e.name.trim() : '';
       const amount = e.amount;
       const people = e.people;
+      const gifts = e.gifts === undefined ? 0 : e.gifts; // 답례품 도입 이전 파일에는 gifts가 없다 — 0으로 본다
       if (!Number.isInteger(envelope) || envelope <= 0 || envelope > ENVELOPE_CAP) {
         return { ok: false, error: (i + 1) + '번째 접수 내역의 봉투번호가 올바르지 않습니다.' };
       }
@@ -1338,20 +1358,25 @@
       }
       seenEnvelopes[envelope] = true;
       if (!name) return { ok: false, error: (i + 1) + '번째 접수 내역에 이름이 없습니다.' };
-      // amount/people은 저장 형식상 항상 원 단위 정수 — 문자열로 오면(예: "50000") 이후
+      // amount/people/gifts는 저장 형식상 항상 원 단위 정수 — 문자열로 오면(예: "50000") 이후
       // 합계 계산(total += e.amount)이 덧셈이 아니라 문자열 연결이 되므로 엄격히 정수만 허용한다.
       // 상한도 함께 확인한다 — Number.isInteger는 1e21도 통과시키므로 이것만으로는 부족하다.
       if (!Number.isInteger(amount) || amount <= 0 || amount > AMOUNT_CAP) {
         return { ok: false, error: (i + 1) + '번째 접수 내역의 금액이 올바르지 않습니다.' };
       }
-      if (!Number.isInteger(people) || people < 1 || people > PEOPLE_CAP) {
-        return { ok: false, error: (i + 1) + '번째 접수 내역의 인원이 올바르지 않습니다.' };
+      // 식권(people)·답례품(gifts)은 각각 0 이상 정수다(축의금만 내고 가는 하객은 둘 다 0).
+      if (!Number.isInteger(people) || people < 0 || people > PEOPLE_CAP) {
+        return { ok: false, error: (i + 1) + '번째 접수 내역의 식권 수가 올바르지 않습니다.' };
+      }
+      if (!Number.isInteger(gifts) || gifts < 0 || gifts > PEOPLE_CAP) {
+        return { ok: false, error: (i + 1) + '번째 접수 내역의 답례품 수가 올바르지 않습니다.' };
       }
       entries.push({
         envelope: envelope,
         name: name,
         amount: amount,
         people: people,
+        gifts: gifts,
         at: typeof e.at === 'string' ? e.at : '' // 형식이 이상해도 formatTime()이 빈 문자열로 처리
       });
     }
@@ -1633,6 +1658,9 @@
   const peopleInput = document.getElementById('peopleInput');
   const peopleMinus = document.getElementById('peopleMinus');
   const peoplePlus = document.getElementById('peoplePlus');
+  const giftsInput = document.getElementById('giftsInput');
+  const giftsMinus = document.getElementById('giftsMinus');
+  const giftsPlus = document.getElementById('giftsPlus');
   const saveFailBox = document.getElementById('saveFailBox');
   const saveBtn = document.getElementById('saveBtn');
   const listScroll = document.getElementById('listScroll');
@@ -1643,6 +1671,7 @@
   const footCount = document.getElementById('footCount');
   const footAmount = document.getElementById('footAmount');
   const footPeople = document.getElementById('footPeople');
+  const footGifts = document.getElementById('footGifts');
   const saveStatusEl = document.getElementById('saveStatusEl');
   const saveStatusText = document.getElementById('saveStatusText');
   const fileSaveRow = document.getElementById('fileSaveRow');
@@ -1903,19 +1932,26 @@
     });
   });
 
-  peopleMinus.addEventListener('click', function () {
-    const cur = Math.max(1, parseInt(peopleInput.value, 10) || 1);
-    peopleInput.value = Math.max(1, cur - 1);
-    peopleInput.focus(); // 버튼에 포커스가 남으면 Enter/Esc가 안 먹는다
-  });
-  peoplePlus.addEventListener('click', function () {
-    const cur = Math.max(1, parseInt(peopleInput.value, 10) || 1);
-    peopleInput.value = cur + 1;
-    peopleInput.focus();
-  });
-  peopleInput.addEventListener('input', function () {
-    peopleInput.value = peopleInput.value.replace(/[^\d]/g, '');
-  });
+  // 식권/답례품 카운터 공용 — 칸이 비었거나 숫자가 아니면 fallback으로 본다. 0~PEOPLE_CAP로 자른다.
+  function readCount(input, fallback) {
+    const n = parseInt(input.value, 10);
+    return Math.min(PEOPLE_CAP, Math.max(0, isNaN(n) ? fallback : n));
+  }
+  function bindCounter(input, minus, plus, fallback) {
+    minus.addEventListener('click', function () {
+      input.value = Math.max(0, readCount(input, fallback) - 1);
+      input.focus(); // 버튼에 포커스가 남으면 Enter/Esc가 안 먹는다
+    });
+    plus.addEventListener('click', function () {
+      input.value = Math.min(PEOPLE_CAP, readCount(input, fallback) + 1);
+      input.focus();
+    });
+    input.addEventListener('input', function () {
+      input.value = input.value.replace(/[^\d]/g, '');
+    });
+  }
+  bindCounter(peopleInput, peopleMinus, peoplePlus, 1);
+  bindCounter(giftsInput, giftsMinus, giftsPlus, 0);
 
   // ---------- 폼 리셋 / 수정 로드 ----------
   function resetForm() {
@@ -1924,6 +1960,7 @@
     nameInput.value = '';
     amountInput.value = '';
     peopleInput.value = '1';
+    giftsInput.value = '0';
     confirmedAmount = null;
     updateAmountReading();
     editingEnvelope = null;
@@ -1940,6 +1977,7 @@
     // toFixed(2) 후 불필요한 0을 잘라내야 "5.00" -> "5", "3.50" -> "3.5"가 된다.
     amountInput.value = String(Number((entry.amount / 10000).toFixed(2)));
     peopleInput.value = entry.people;
+    giftsInput.value = entry.gifts;
     updateAmountReading();
     editEnvelopeLabel.textContent = pad3(entry.envelope);
     editBanner.classList.add('active');
@@ -1988,7 +2026,8 @@
       amountInput.focus();
       return;
     }
-    const people = Math.max(1, parseInt(peopleInput.value, 10) || 1);
+    const people = readCount(peopleInput, 1);
+    const gifts = readCount(giftsInput, 0);
 
     // 저장이 거부될 수 있으므로(다른 탭이 먼저 저장 / localStorage 쓰기 실패), 메모리 변경을
     // persist() 호출 전에 먼저 커밋하지 않는다. 실패 시 되돌릴 수 있게 변경 전 상태를 both
@@ -1999,9 +2038,11 @@
       const prevName = target.name;
       const prevAmount = target.amount;
       const prevPeople = target.people;
+      const prevGifts = target.gifts;
       target.name = name;
       target.amount = amount;
       target.people = people;
+      target.gifts = gifts;
 
       if (persist()) {
         lastAddedEnvelope = editingEnvelope;
@@ -2014,6 +2055,7 @@
         target.name = prevName;
         target.amount = prevAmount;
         target.people = prevPeople;
+        target.gifts = prevGifts;
         renderEntryList();
         showSaveFailBox();
       }
@@ -2023,6 +2065,7 @@
         name: name,
         amount: amount,
         people: people,
+        gifts: gifts,
         at: nowIso()
       };
       w.entries.push(entry); // 봉투번호 오름차순으로 push (SPEC 요구)
@@ -2046,8 +2089,8 @@
 
   saveBtn.addEventListener('click', saveEntry);
 
-  // Enter는 이름/금액/인원 세 입력 필드에서만 저장을 트리거한다 (검색창 제외, form 미사용이므로 새로고침 없음).
-  [nameInput, amountInput, peopleInput].forEach(function (input) {
+  // Enter는 이름/금액/식권/답례품 입력 필드에서만 저장을 트리거한다 (검색창 제외, form 미사용이므로 새로고침 없음).
+  [nameInput, amountInput, peopleInput, giftsInput].forEach(function (input) {
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
@@ -2069,11 +2112,12 @@
     if (!w) return;
     const query = searchInput.value.trim();
 
-    let total = 0, people = 0, count = 0;
-    w.entries.forEach(function (e) { total += e.amount; people += e.people; count++; });
+    let total = 0, people = 0, gifts = 0, count = 0;
+    w.entries.forEach(function (e) { total += e.amount; people += e.people; gifts += e.gifts; count++; });
     footCount.textContent = count + '건';
     footAmount.textContent = formatComma(total) + '원';
-    footPeople.textContent = people + '명';
+    footPeople.textContent = people + '장';
+    footGifts.textContent = gifts + '개';
 
     quickStatsEl.textContent = '접수 ' + count + '건 · ' + formatComma(total) + '원';
 
@@ -2096,7 +2140,8 @@
           '<span class="entry-envelope num">' + pad3(e.envelope) + '</span>' +
           '<span class="entry-name">' + escapeHtml(e.name) + '</span>' +
           '<span class="entry-amount num">' + formatComma(e.amount) + '원</span>' +
-          '<span class="entry-people num">' + e.people + '명</span>' +
+          '<span class="entry-people num">' + e.people + '장</span>' +
+          '<span class="entry-gifts num">' + e.gifts + '개</span>' +
           '<span class="entry-time num">' + formatTime(e.at) + '</span>' +
           '<span class="entry-actions">' +
             '<button type="button" class="icon-btn edit-entry-btn" data-envelope="' + e.envelope + '">수정</button>' +
@@ -2157,6 +2202,7 @@
   const settleTotalKoEl = document.getElementById('settleTotalKoEl');
   const settleCountEl = document.getElementById('settleCountEl');
   const settlePeopleEl = document.getElementById('settlePeopleEl');
+  const settleGiftsEl = document.getElementById('settleGiftsEl');
   const settleAvgEl = document.getElementById('settleAvgEl');
   const bandListEl = document.getElementById('bandListEl');
   const recordedCashEl = document.getElementById('recordedCashEl');
@@ -2181,14 +2227,15 @@
     settleEventNameEl.textContent = w.groomName + ' · ' + w.brideName + ' 결혼식';
     settleSideLabel.textContent = sideLabel(w.side);
 
-    let total = 0, people = 0, count = 0;
-    w.entries.forEach(function (e) { total += e.amount; people += e.people; count++; });
+    let total = 0, people = 0, gifts = 0, count = 0;
+    w.entries.forEach(function (e) { total += e.amount; people += e.people; gifts += e.gifts; count++; });
     const avg = count > 0 ? Math.round(total / count) : 0;
 
     settleTotalEl.textContent = formatComma(total) + '원';
     settleTotalKoEl.textContent = koreanAmount(total);
     settleCountEl.textContent = count + '건';
-    settlePeopleEl.textContent = people + '명';
+    settlePeopleEl.textContent = people + '장';
+    settleGiftsEl.textContent = gifts + '개';
     settleAvgEl.textContent = formatComma(avg) + '원';
 
     // 금액대 분포 — 정해진 프리셋 금액 외는 '기타'로 집계
@@ -2274,14 +2321,14 @@
 
   // ---------- CSV 내보내기 ----------
   function buildCsv(wedding) {
-    const rows = [['봉투번호', '이름', '금액', '인원', '접수시각']];
+    const rows = [['봉투번호', '이름', '금액', '식권', '답례품', '접수시각']];
     const sorted = wedding.entries.slice().sort(function (a, b) { return a.envelope - b.envelope; });
     sorted.forEach(function (e) {
       const d = new Date(e.at);
       const timeStr = isNaN(d.getTime()) ? '' :
         d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') +
         ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-      rows.push([e.envelope, e.name, e.amount, e.people, timeStr]);
+      rows.push([e.envelope, e.name, e.amount, e.people, e.gifts, timeStr]);
     });
 
     function csvField(v) {
